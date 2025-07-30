@@ -1,8 +1,9 @@
 import sys
 import os
 import random
-from PyQt5.QtCore import Qt, QTimer, QPoint, QRectF
-from PyQt5.QtGui import QPixmap, QPainter, QRegion, QGuiApplication
+import math
+from PyQt5.QtCore import Qt, QTimer, QPointF, QRectF
+from PyQt5.QtGui import QPixmap, QPainter, QTransform, QGuiApplication
 from PyQt5.QtWidgets import QApplication, QWidget
 
 KITTEN_IMAGE_PATH = r"C:\Users\livad\Fisiere_coding\Pawse\Kitties"
@@ -17,12 +18,16 @@ STABILITY_THRESHOLD_X = 80
 SLIDE_HORIZONTAL_SPEED = 5
 SPAWN_COLUMNS = 20
 COLUMN_WIDTH = WINDOW_WIDTH // SPAWN_COLUMNS
+PACK_MIN = 1
+PACK_MAX = 4
 
 class Kitten:
-    def __init__(self, x, y, image):
+    def __init__(self, x, y, image, rotation):
         self.original_pixmap = image
-        self.pixmap = image
-        self.rect = QRectF(x, y, image.width(), image.height())
+        self.rotation = rotation
+        transform = QTransform().rotate(rotation)
+        self.pixmap = image.transformed(transform, Qt.SmoothTransformation)
+        self.rect = QRectF(x, y, self.pixmap.width(), self.pixmap.height())
         self.speed_y = KITTEN_SPEED
         self.speed_x = 0
         self.is_falling = True
@@ -75,7 +80,7 @@ class TransparentOverlay(QWidget):
         self.all_kittens = []
         self.stacked_kittens = []
         self.spawn_timer = QTimer()
-        self.spawn_timer.timeout.connect(self.spawn_kitten)
+        self.spawn_timer.timeout.connect(self.spawn_pack)
         self.spawn_timer.start(SPAWN_INTERVAL_MS)
 
         self.update_timer = QTimer()
@@ -107,6 +112,11 @@ class TransparentOverlay(QWidget):
         print(f"Loaded {len(kittens)} kitten images.")
         return kittens
 
+    def spawn_pack(self):
+        pack_size = random.randint(PACK_MIN, PACK_MAX)
+        for _ in range(pack_size):
+            self.spawn_kitten()
+
     def spawn_kitten(self):
         if not self.kitten_images:
             print("No kitten images loaded. Skipping spawn.")
@@ -127,7 +137,6 @@ class TransparentOverlay(QWidget):
             return
 
         col = random.choice(eligible_columns)
-
         min_x = col * COLUMN_WIDTH
         max_x = min((col + 1) * COLUMN_WIDTH - image.width(), WINDOW_WIDTH - image.width())
 
@@ -136,10 +145,10 @@ class TransparentOverlay(QWidget):
             return
 
         x = random.randint(min_x, max_x)
-        y = -image.height()
-
-        print(f"Spawning kitten at x={x}, y={y}, col={col}")
-        self.all_kittens.append(Kitten(x, y, image))
+        y = -image.height() - random.randint(0, 100)  # varied starting y
+        rotation = random.uniform(-45, 45)
+        print(f"Spawning kitten at x={x}, y={y}, col={col}, rotation={rotation:.2f}")
+        self.all_kittens.append(Kitten(x, y, image, rotation))
 
     def game_loop(self):
         for kitten in self.all_kittens:
