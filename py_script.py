@@ -1,9 +1,9 @@
 import sys
 import os
 import random
-import math
-from PyQt5.QtCore import Qt, QTimer, QPointF, QRectF
-from PyQt5.QtGui import QPixmap, QPainter, QTransform, QGuiApplication
+import time
+from PyQt5.QtCore import Qt, QTimer, QPoint, QRectF
+from PyQt5.QtGui import QPixmap, QPainter, QRegion, QGuiApplication, QTransform
 from PyQt5.QtWidgets import QApplication, QWidget
 
 KITTEN_IMAGE_PATH = r"C:\Users\livad\Fisiere_coding\Pawse\Kitties"
@@ -18,21 +18,30 @@ STABILITY_THRESHOLD_X = 80
 SLIDE_HORIZONTAL_SPEED = 5
 SPAWN_COLUMNS = 20
 COLUMN_WIDTH = WINDOW_WIDTH // SPAWN_COLUMNS
-PACK_MIN = 1
-PACK_MAX = 4
+TOP_THRESHOLD = 10  # Threshold for column height to consider it filled
+VIBRATION_GUARD_TIME = 0.2
+TOGGLE_COUNT_LIMIT = 6  # Number of toggles within short time to freeze motion
 
 class Kitten:
-    def __init__(self, x, y, image, rotation):
+    def __init__(self, x, y, image):
         self.original_pixmap = image
-        self.rotation = rotation
+        rotation = random.randint(-25, 25)
         transform = QTransform().rotate(rotation)
         self.pixmap = image.transformed(transform, Qt.SmoothTransformation)
         self.rect = QRectF(x, y, self.pixmap.width(), self.pixmap.height())
-        self.speed_y = KITTEN_SPEED
-        self.speed_x = 0
+        self.speed_y = KITTEN_SPEED + random.uniform(-1, 1)
+        self.speed_x = random.uniform(-1, 1)
         self.is_falling = True
+        self.last_toggle_time = time.time()
+        self.toggle_count = 0
+        self.freeze_motion = False
 
     def update(self, stacked_kittens):
+        now = time.time()
+
+        if self.freeze_motion:
+            return
+
         if self.is_falling:
             self.rect.moveTop(self.rect.top() + self.speed_y)
             self.rect.moveLeft(self.rect.left() + self.speed_x)
@@ -55,15 +64,27 @@ class Kitten:
             self.rect.moveBottom(support.rect.top())
             offset_x = self.rect.center().x() - support.rect.center().x()
             if abs(offset_x) > STABILITY_THRESHOLD_X:
-                self.is_falling = True
-                self.speed_x = SLIDE_HORIZONTAL_SPEED if offset_x > 0 else -SLIDE_HORIZONTAL_SPEED
+                if now - self.last_toggle_time > VIBRATION_GUARD_TIME:
+                    self.is_falling = True
+                    self.speed_x = SLIDE_HORIZONTAL_SPEED if offset_x > 0 else -SLIDE_HORIZONTAL_SPEED
+                    self.last_toggle_time = now
+                    self.toggle_count += 1
             else:
+                if self.is_falling:
+                    self.toggle_count += 1
                 self.is_falling = False
                 self.speed_x = 0
+                self.last_toggle_time = now
         else:
-            if not self.is_falling:
+            if not self.is_falling and now - self.last_toggle_time > VIBRATION_GUARD_TIME:
                 self.is_falling = True
                 self.speed_x = 0
+                self.last_toggle_time = now
+                self.toggle_count += 1
+
+        if self.toggle_count > TOGGLE_COUNT_LIMIT:
+            self.freeze_motion = True
+            print(f"Kitten at {self.rect.topLeft()} frozen to prevent vibration.")
 
 class TransparentOverlay(QWidget):
     def __init__(self):
@@ -80,7 +101,7 @@ class TransparentOverlay(QWidget):
         self.all_kittens = []
         self.stacked_kittens = []
         self.spawn_timer = QTimer()
-        self.spawn_timer.timeout.connect(self.spawn_pack)
+        self.spawn_timer.timeout.connect(self.spawn_kitten)
         self.spawn_timer.start(SPAWN_INTERVAL_MS)
 
         self.update_timer = QTimer()
@@ -112,11 +133,6 @@ class TransparentOverlay(QWidget):
         print(f"Loaded {len(kittens)} kitten images.")
         return kittens
 
-    def spawn_pack(self):
-        pack_size = random.randint(PACK_MIN, PACK_MAX)
-        for _ in range(pack_size):
-            self.spawn_kitten()
-
     def spawn_kitten(self):
         if not self.kitten_images:
             print("No kitten images loaded. Skipping spawn.")
@@ -127,35 +143,46 @@ class TransparentOverlay(QWidget):
 
         eligible_columns = []
         for i in range(SPAWN_COLUMNS):
-            min_x = i * COLUMN_WIDTH
-            max_x = (i + 1) * COLUMN_WIDTH - img_width
-            if max_x >= min_x:
-                eligible_columns.append(i)
+            if self.column_heights[i] > TOP_THRESHOLD:
+                min_x = i * COLUMN_WIDTH
+                max_x = (i + 1) * COLUMN_WIDTH - img_width
+                if max_x >= min_x:
+                    eligible_columns.append(i)
 
         if not eligible_columns:
-            print("No eligible columns for spawning.")
+            print("WARNING: All columns are filled to the top. Cannot spawn more kittens.")
             return
 
-        col = random.choice(eligible_columns)
-        min_x = col * COLUMN_WIDTH
-        max_x = min((col + 1) * COLUMN_WIDTH - image.width(), WINDOW_WIDTH - image.width())
+        filled_count = SPAWN_COLUMNS - len(eligible_columns)
+        if filled_count >= int(SPAWN_COLUMNS * 0.8):
+            print(f"NOTICE: {filled_count}/{SPAWN_COLUMNS} columns are filled near the top.")
 
-        if max_x < min_x:
-            print(f"Invalid spawn range for column {col}: min_x={min_x}, max_x={max_x}")
-            return
+        spawn_count = random.randint(1, 3)
+        for _ in range(spawn_count):
+            if not eligible_columns:
+                break
 
-        x = random.randint(min_x, max_x)
-        y = -image.height() - random.randint(0, 100)  # varied starting y
-        rotation = random.uniform(-45, 45)
-        print(f"Spawning kitten at x={x}, y={y}, col={col}, rotation={rotation:.2f}")
-        self.all_kittens.append(Kitten(x, y, image, rotation))
+            col = random.choice(eligible_columns)
+            min_x = col * COLUMN_WIDTH
+            max_x = min((col + 1) * COLUMN_WIDTH - image.width(), WINDOW_WIDTH - image.width())
+
+            if max_x < min_x:
+                print(f"Invalid spawn range for column {col}: min_x={min_x}, max_x={max_x}")
+                continue
+
+            x = random.randint(min_x, max_x)
+            x += random.randint(-20, 20)
+            x = max(0, min(x, WINDOW_WIDTH - image.width()))
+            y = -image.height() - random.randint(0, 100)
+
+            print(f"Spawning kitten at x={x}, y={y}, col={col}")
+            self.all_kittens.append(Kitten(x, y, image))
 
     def game_loop(self):
         for kitten in self.all_kittens:
             kitten.update(self.stacked_kittens)
             if not kitten.is_falling and kitten not in self.stacked_kittens:
                 self.stacked_kittens.append(kitten)
-
                 start_col = int(kitten.rect.left()) // COLUMN_WIDTH
                 end_col = int(kitten.rect.right()) // COLUMN_WIDTH
 
@@ -175,12 +202,12 @@ class TransparentOverlay(QWidget):
             painter.drawPixmap(kitten.rect.topLeft(), kitten.pixmap)
 
     def mousePressEvent(self, event):
-        for kitten in reversed(self.all_kittens):  # Top-down
+        for kitten in reversed(self.all_kittens):
             if kitten.rect.contains(event.pos()):
                 print(f"Click blocked by kitten at {kitten.rect.topLeft()}.")
-                return  # Block click here
+                return
         print("Click passed through.")
-        event.ignore()  # Allow click-through
+        event.ignore()
 
 if __name__ == '__main__':
     app = QApplication(sys.argv)
