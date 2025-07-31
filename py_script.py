@@ -7,26 +7,33 @@ from PyQt5.QtGui import QPixmap, QPainter, QRegion, QGuiApplication, QTransform
 from PyQt5.QtWidgets import QApplication, QWidget
 
 KITTEN_IMAGE_PATH = r"C:\Users\livad\Fisiere_coding\Pawse\Kitties"
-WINDOW_WIDTH = 1920
-WINDOW_HEIGHT = 1080
+
+app = QApplication(sys.argv)  # Required to get screens
+screen_geometries = QGuiApplication.screens()
+if not screen_geometries:
+    raise RuntimeError("No screens found. Cannot determine screen geometry.")
+
+WINDOW_WIDTH = max(screen.geometry().x() + screen.geometry().width() for screen in screen_geometries)
+WINDOW_HEIGHT = max(screen.geometry().y() + screen.geometry().height() for screen in screen_geometries)
+
 FPS = 60
 SPAWN_INTERVAL_MS = 250
 KITTEN_SPEED = 5
-KITTEN_MAX_DIMENSION = 120
+KITTEN_MAX_DIMENSION = 200
 KITTEN_COLLISION_SCALE = 0.6
 STABILITY_THRESHOLD_X = 80
 SLIDE_HORIZONTAL_SPEED = 5
 SPAWN_COLUMNS = 20
 COLUMN_WIDTH = WINDOW_WIDTH // SPAWN_COLUMNS
-TOP_THRESHOLD = 10  # Threshold for column height to consider it filled
+TOP_THRESHOLD = 10
 VIBRATION_GUARD_TIME = 0.2
-TOGGLE_COUNT_LIMIT = 6  # Number of toggles within short time to freeze motion
+TOGGLE_COUNT_LIMIT = 6
 
 class Kitten:
     def __init__(self, x, y, image):
+        self.rotation = random.randint(-90, 90)
+        transform = QTransform().rotate(self.rotation)
         self.original_pixmap = image
-        rotation = random.randint(-25, 25)
-        transform = QTransform().rotate(rotation)
         self.pixmap = image.transformed(transform, Qt.SmoothTransformation)
         self.rect = QRectF(x, y, self.pixmap.width(), self.pixmap.height())
         self.speed_y = KITTEN_SPEED + random.uniform(-1, 1)
@@ -38,7 +45,6 @@ class Kitten:
 
     def update(self, stacked_kittens):
         now = time.time()
-
         if self.freeze_motion:
             return
 
@@ -94,8 +100,9 @@ class TransparentOverlay(QWidget):
         self.setAttribute(Qt.WA_NoSystemBackground, True)
         self.setAttribute(Qt.WA_TransparentForMouseEvents, False)
 
-        screen = QGuiApplication.primaryScreen().geometry()
-        self.setGeometry(0, 0, screen.width(), screen.height())
+        total_width = WINDOW_WIDTH
+        total_height = WINDOW_HEIGHT
+        self.setGeometry(0, 0, total_width, total_height)
 
         self.kitten_images = self.load_kittens()
         self.all_kittens = []
@@ -210,7 +217,6 @@ class TransparentOverlay(QWidget):
         event.ignore()
 
 if __name__ == '__main__':
-    app = QApplication(sys.argv)
     overlay = TransparentOverlay()
     overlay.showFullScreen()
     sys.exit(app.exec_())
