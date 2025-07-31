@@ -9,12 +9,21 @@ from PyQt5.QtWidgets import QApplication, QWidget
 KITTEN_IMAGE_PATH = r"C:\Users\livad\Fisiere_coding\Pawse\Kitties"
 
 app = QApplication(sys.argv)  # Required to get screens
+# Get combined geometry across all screens
 screen_geometries = QGuiApplication.screens()
 if not screen_geometries:
     raise RuntimeError("No screens found. Cannot determine screen geometry.")
 
-WINDOW_WIDTH = max(screen.geometry().x() + screen.geometry().width() for screen in screen_geometries)
-WINDOW_HEIGHT = max(screen.geometry().y() + screen.geometry().height() for screen in screen_geometries)
+screen_rects = [screen.geometry() for screen in screen_geometries]
+WINDOW_LEFT = min(rect.left() for rect in screen_rects)
+WINDOW_TOP = min(rect.top() for rect in screen_rects)
+WINDOW_RIGHT = max(rect.right() for rect in screen_rects)
+WINDOW_BOTTOM = max(rect.bottom() for rect in screen_rects)
+
+WINDOW_WIDTH = WINDOW_RIGHT - WINDOW_LEFT
+WINDOW_HEIGHT = WINDOW_BOTTOM - WINDOW_TOP
+print(f"Overlay starts at ({WINDOW_LEFT}, {WINDOW_TOP}) and spans {WINDOW_WIDTH}x{WINDOW_HEIGHT}")
+
 
 FPS = 60
 SPAWN_INTERVAL_MS = 250
@@ -102,7 +111,7 @@ class TransparentOverlay(QWidget):
 
         total_width = WINDOW_WIDTH
         total_height = WINDOW_HEIGHT
-        self.setGeometry(0, 0, total_width, total_height)
+        self.setGeometry(WINDOW_LEFT, WINDOW_TOP, WINDOW_WIDTH, WINDOW_HEIGHT)
 
         self.kitten_images = self.load_kittens()
         self.all_kittens = []
@@ -177,10 +186,15 @@ class TransparentOverlay(QWidget):
                 print(f"Invalid spawn range for column {col}: min_x={min_x}, max_x={max_x}")
                 continue
 
-            x = random.randint(min_x, max_x)
+            # Spawn in screen-wide range (absolute)
+            x = random.randint(WINDOW_LEFT, WINDOW_RIGHT - image.width())
             x += random.randint(-20, 20)
-            x = max(0, min(x, WINDOW_WIDTH - image.width()))
-            y = -image.height() - random.randint(0, 100)
+            x = max(WINDOW_LEFT, min(x, WINDOW_RIGHT - image.width()))
+            y = WINDOW_TOP - image.height() - random.randint(0, 100)
+
+            # ✅ Convert to overlay-relative coordinates
+            x -= WINDOW_LEFT
+            y -= WINDOW_TOP
 
             print(f"Spawning kitten at x={x}, y={y}, col={col}")
             self.all_kittens.append(Kitten(x, y, image))
@@ -206,7 +220,9 @@ class TransparentOverlay(QWidget):
         painter.setOpacity(1.0)
 
         for kitten in self.all_kittens:
+            adjusted_pos = kitten.rect.topLeft() - QPoint(WINDOW_LEFT, WINDOW_TOP)
             painter.drawPixmap(kitten.rect.topLeft(), kitten.pixmap)
+
 
     def mousePressEvent(self, event):
         for kitten in reversed(self.all_kittens):
@@ -218,5 +234,5 @@ class TransparentOverlay(QWidget):
 
 if __name__ == '__main__':
     overlay = TransparentOverlay()
-    overlay.showFullScreen()
+    overlay.show()  # showFullScreen() overrides custom geometry — show() respects it
     sys.exit(app.exec_())
