@@ -1,314 +1,353 @@
-import pygame
-import random
-import os
 import sys
-
-# --- Initialize Pygame ---
-pygame.init()
-print("Pygame initialized successfully.")
-
-# --- Constants ---
-WINDOW_WIDTH = 800
-WINDOW_HEIGHT = 600
-SCREEN_WIDTH = WINDOW_WIDTH
-SCREEN_HEIGHT = WINDOW_HEIGHT
-print(f"Game area set to: {SCREEN_WIDTH}x{SCREEN_HEIGHT} pixels.")
-
-FPS = 60
-KITTEN_SPEED = 5
-KITTEN_MAX_DIMENSION = 120 # Max width or height for any scaled kitten.
-KITTEN_COLLISION_SCALE = 0.6 # Adjust for tighter/looser visual stacking (0.5 to 0.9)
-
-# NEW: Constants for Stability and Sliding
-STABILITY_THRESHOLD_X = 80 # Pixels: Max horizontal offset from center for stable stack. Adjust this.
-SLIDE_HORIZONTAL_SPEED = 5 # Pixels per frame: How fast unstable kittens slide horizontally.
+import os
+import random
+import time
+from PyQt5.QtCore import Qt, QTimer, QPoint, QRectF
+from PyQt5.QtGui import QPixmap, QPainter, QRegion, QGuiApplication, QTransform
+from PyQt5.QtWidgets import QApplication, QWidget, QLabel, QMainWindow
 
 KITTEN_IMAGE_PATH = r"C:\Users\livad\Fisiere_coding\Pawse\Kitties"
 
-SPAWN_COLUMNS = 20 # Number of vertical columns for spawning logic
-COLUMN_WIDTH = SCREEN_WIDTH // SPAWN_COLUMNS # Actual width of each tracking column
+app = QApplication(sys.argv)  # Required to get screens
+# Get combined geometry across all screens
+screen_geometries = QGuiApplication.screens()
+if not screen_geometries:
+    raise RuntimeError("No screens found. Cannot determine screen geometry.")
 
-# --- Set up the display ---
-try:
-    screen = pygame.display.set_mode((WINDOW_WIDTH, WINDOW_HEIGHT))
-    pygame.display.set_caption("Pawse App - Falling Kittens (Windowed)")
-    print(f"Pygame display set to windowed mode: {WINDOW_WIDTH}x{WINDOW_HEIGHT} pixels.")
-except pygame.error as e:
-    print(f"CRITICAL ERROR: Could not set display mode: {e}")
-    pygame.quit()
-    sys.exit()
+screen_rects = [screen.geometry() for screen in screen_geometries]
+WINDOW_LEFT = min(rect.left() for rect in screen_rects)
+WINDOW_TOP = min(rect.top() for rect in screen_rects)
+WINDOW_RIGHT = max(rect.right() for rect in screen_rects)
+WINDOW_BOTTOM = max(rect.bottom() for rect in screen_rects)
 
-# --- Load Kitten Images ---
-kitten_original_images = []
-print(f"Attempting to load kitten images from: {KITTEN_IMAGE_PATH}")
-if not os.path.exists(KITTEN_IMAGE_PATH):
-    print(f"ERROR: The specified kitten image path does NOT exist: {KITTEN_IMAGE_PATH}")
-    print("Please ensure the directory exists and contains image files.")
-    pygame.quit()
-    sys.exit()
+WINDOW_WIDTH = WINDOW_RIGHT - WINDOW_LEFT
+WINDOW_HEIGHT = WINDOW_BOTTOM - WINDOW_TOP
+print(f"Overlay starts at ({WINDOW_LEFT}, {WINDOW_TOP}) and spans {WINDOW_WIDTH}x{WINDOW_HEIGHT}")
 
-try:
-    found_images = False
-    for filename in os.listdir(KITTEN_IMAGE_PATH):
-        if filename.lower().endswith(('.png', '.jpg', '.jpeg', '.gif', '.bmp')):
-            filepath = os.path.join(KITTEN_IMAGE_PATH, filename)
-            try:
-                image = pygame.image.load(filepath).convert_alpha()
-                original_width, original_height = image.get_size()
-                aspect_ratio = original_width / original_height
 
-                if original_width > original_height:
-                    new_width = KITTEN_MAX_DIMENSION
-                    new_height = int(new_width / aspect_ratio)
-                else:
-                    new_height = KITTEN_MAX_DIMENSION
-                    new_width = int(new_height * aspect_ratio)
+FPS = 60
+SPAWN_INTERVAL_MS = 250
+KITTEN_SPEED = 5
+KITTEN_MAX_DIMENSION = 200
+KITTEN_COLLISION_SCALE = 0.6
+STABILITY_THRESHOLD_X = 80
+SLIDE_HORIZONTAL_SPEED = 5
+SPAWN_COLUMNS = 20
+COLUMN_WIDTH = WINDOW_WIDTH // SPAWN_COLUMNS
+TOP_THRESHOLD = 10
+VIBRATION_GUARD_TIME = 0.2
+TOGGLE_COUNT_LIMIT = 6
 
-                image = pygame.transform.scale(image, (new_width, new_height))
-                kitten_original_images.append(image)
-                print(f"  - Successfully loaded and scaled: {filename} to {new_width}x{new_height}")
-                found_images = True
-            except pygame.error as e:
-                print(f"  - WARNING: Error loading image {filename}: {e}")
 
-    if not found_images:
-        print(f"WARNING: No valid kitten images found in {KITTEN_IMAGE_PATH}. The app will run, but no kittens will appear as there are no images to display.")
-except Exception as e:
-    print(f"CRITICAL ERROR: An unexpected error occurred while processing image directory: {e}")
-    pygame.quit()
-    sys.exit()
 
-# --- Kitten Class ---
-class Kitten(pygame.sprite.Sprite):
-    def __init__(self, x, y, image, layer):
+
+
+# --- Pre-fall Phase ---
+class MainWindow(QMainWindow):
+    def __init__(self):
         super().__init__()
-        self.original_image = image # Original scaled image, for rotation
-        self.image = image # Current rotated image, for drawing
 
-        # This rect represents the VISUAL bounds of the kitten at its current (unrotated) form.
-        self.visual_image_rect = self.image.get_rect()
-        self.visual_image_rect.topleft = (x, y) # Set its initial position
-
-        # This 'rect' attribute is the actual collision box.
-        # It's derived from the visual_image_rect but scaled down for tighter collision.
-        collision_width = int(self.visual_image_rect.width * KITTEN_COLLISION_SCALE)
-        collision_height = int(self.visual_image_rect.height * KITTEN_COLLISION_SCALE)
-
-        collision_width = max(1, collision_width) # Ensure minimum size
-        collision_height = max(1, collision_height)
-
-        self.rect = pygame.Rect(0, 0, collision_width, collision_height)
-        self.rect.center = self.visual_image_rect.center # Center collision rect on visual image
-
-        self.speed = KITTEN_SPEED
-        self.is_falling = True # Kitten always starts falling
-        self.horizontal_slide_speed = 0 # New: horizontal speed for sliding
-        self.rotation_angle = random.randint(0, 359)
-        self.layer = layer # 0 for background, 1 for foreground
-
-        # Apply initial rotation
-        self._rotate_image()
-
-        # After rotation, re-center rects to the initial spawn position
-        self.visual_image_rect.topleft = (x, y)
-        self.rect.center = self.visual_image_rect.center
-
-        # Debug print for creation
-        # print(f"Kitten created at ({self.rect.x}, {self.rect.y}) Collision Size: {self.rect.width}x{self.rect.height} Visual Size: {self.visual_image_rect.width}x{self.visual_image_rect.height}. Layer: {self.layer}")
-
-
-    def _rotate_image(self):
-        current_collision_center = self.rect.center
-
-        self.image = pygame.transform.rotate(self.original_image, self.rotation_angle)
-
-        self.visual_image_rect = self.image.get_rect(center=current_collision_center)
-
-        collision_width = int(self.visual_image_rect.width * KITTEN_COLLISION_SCALE)
-        collision_height = int(self.visual_image_rect.height * KITTEN_COLLISION_SCALE)
-
-        collision_width = max(1, collision_width)
-        collision_height = max(1, collision_height)
-
-        self.rect.update(self.rect.x, self.rect.y, collision_width, collision_height)
-        self.rect.center = current_collision_center
-
-
-    def update(self, stacked_kittens_group):
-        # Apply movement (vertical and horizontal) if the kitten is considered "falling" (which includes sliding)
-        if self.is_falling:
-            self.rect.y += self.speed
-            self.rect.x += self.horizontal_slide_speed
-
-            # Clamp horizontal movement to screen boundaries
-            if self.rect.left < 0:
-                self.rect.left = 0
-                self.horizontal_slide_speed = 0 # Stop sliding into the wall
-            if self.rect.right > SCREEN_WIDTH:
-                self.rect.right = SCREEN_WIDTH
-                self.horizontal_slide_speed = 0 # Stop sliding into the wall
-
-        # Check for collision with the bottom of the window (solid ground)
-        if self.rect.bottom >= SCREEN_HEIGHT:
-            self.rect.bottom = SCREEN_HEIGHT
-            self.is_falling = False # Definitely not falling on solid ground
-            self.horizontal_slide_speed = 0 # Stop any horizontal slide
-            return # Kitten has landed firmly, no more checks needed for this frame
-
-        # Find potential support kittens from the already stacked group
-        # Look for kittens that are below and whose top is close to our bottom
-        support_kitten = None
-        for other_kitten in stacked_kittens_group:
-            if other_kitten != self and not other_kitten.is_falling: # Exclude self and falling kittens
-                # Check if our bottom is at or just below their top, AND there's horizontal overlap
-                if self.rect.colliderect(other_kitten.rect) and \
-                   self.rect.bottom >= other_kitten.rect.top - self.speed and \
-                   self.rect.bottom <= other_kitten.rect.top + self.speed:
-                    # This is a strong candidate for support. Prioritize the highest (lowest Y) one.
-                    if support_kitten is None or other_kitten.rect.top < support_kitten.rect.top:
-                        support_kitten = other_kitten
+        self.setWindowFlags(Qt.FramelessWindowHint | Qt.WindowStaysOnTopHint | Qt.Tool)
+        self.setAttribute(Qt.WA_TranslucentBackground)
         
-        # Determine state based on whether a primary support was found
-        if support_kitten:
-            # Snap vertically to the top of the support kitten
-            self.rect.bottom = support_kitten.rect.top
+        screens = QGuiApplication.screens()
+        combined_rect = screens[0].geometry()
 
-            # Calculate horizontal offset from the support kitten's center
-            offset_x = self.rect.centerx - support_kitten.rect.centerx
+        for screen in screens[1:]:
+            combined_rect = combined_rect.united(screen.geometry())
 
-            # Check for horizontal stability
-            if abs(offset_x) > STABILITY_THRESHOLD_X:
-                self.is_falling = True # Kitten is unstable, so it remains "falling" (sliding)
-                if offset_x > 0: # Current kitten is to the right of support's center
-                    self.horizontal_slide_speed = SLIDE_HORIZONTAL_SPEED
-                else: # Current kitten is to the left
-                    self.horizontal_slide_speed = -SLIDE_HORIZONTAL_SPEED
-                # print(f"Kitten {id(self)} unstable on {id(support_kitten)}. Offset: {offset_x:.1f}. Sliding: {self.horizontal_slide_speed}")
-            else:
-                # Kitten is stable on top of the support
-                self.is_falling = False # Stop vertical "fall"
-                self.horizontal_slide_speed = 0 # Stop horizontal slide
-                # print(f"Kitten {id(self)} stable on {id(support_kitten)}. Offset: {offset_x:.1f}.")
+        # Save combined geometry constants for consistent use
+        global WINDOW_LEFT, WINDOW_TOP, WINDOW_WIDTH, WINDOW_HEIGHT, WINDOW_RIGHT, COLUMN_WIDTH
+        WINDOW_LEFT = combined_rect.left()
+        WINDOW_TOP = combined_rect.top()
+        WINDOW_WIDTH = combined_rect.width()
+        WINDOW_HEIGHT = combined_rect.height()
+        WINDOW_RIGHT = WINDOW_LEFT + WINDOW_WIDTH
+        COLUMN_WIDTH = WINDOW_WIDTH // SPAWN_COLUMNS
+
+
+        self.setGeometry(combined_rect)
+        self.window_rect = combined_rect  # Save for reference
+
+
+        self.warning_kitten_count = 0
+        self.labels = []
+
+        for screen in screens:
+            screen_geom = screen.geometry()
+            label = QLabel("Break time in 1 minute...", self)
+            label.setStyleSheet(
+                "color: white; font-size: 30px; background-color: rgba(0,0,0,0.5); padding: 20px; border-radius: 10px;"
+            )
+            label.adjustSize()
+            # Position relative to main window coordinates (combined)
+            label_x = screen_geom.left() - WINDOW_LEFT + (screen_geom.width() - label.width()) // 2
+            label_y = screen_geom.top() - WINDOW_TOP + (screen_geom.height() - label.height()) // 2
+            label.move(label_x, label_y)
+            label.show()
+            self.labels.append(label)
+
+        self.overlay = TransparentOverlay(self, geometry=combined_rect)
+        # self.overlay.setGeometry(0, 0, WINDOW_WIDTH, WINDOW_HEIGHT)
+        self.overlay.show()
+        self.overlay.spawn_timer.stop()
+
+         # Setup timer to spawn 2-3 warning kittens over ~1 min
+        self.warning_spawn_timer = QTimer()
+        self.warning_spawn_timer.timeout.connect(self.spawn_warning_kitten)
+        self.warning_spawn_timer.start(3000) # spawn warning kitten every 3 seconds (adjust as needed)
+
+        # Immediately spawn the first warning kitten
+        self.spawn_warning_kitten()
+
+        # Start main fall after 10 seconds
+        self.warning_timer = QTimer()
+        self.warning_timer.setSingleShot(True)
+        self.warning_timer.timeout.connect(self.start_main_kitten_fall)
+        self.warning_timer.start(10000) #change break message time ------------------------------------
+
+    def spawn_warning_kitten(self):
+        if self.warning_kitten_count < 3:
+            self.overlay.spawn_kitten(single=True)
+            self.warning_kitten_count += 1
         else:
-            # No support kitten found. If it was previously stable, it must start falling again.
-            if not self.is_falling:
+            self.warning_spawn_timer.stop()
+
+    def start_main_kitten_fall(self):
+        for label in self.labels:
+            label.hide()
+        self.overlay.spawn_timer.start(SPAWN_INTERVAL_MS)
+
+
+
+class Kitten:
+    def __init__(self, x, y, image):
+        self.rotation = random.randint(-90, 90)
+        transform = QTransform().rotate(self.rotation)
+        self.original_pixmap = image
+        self.pixmap = image.transformed(transform, Qt.SmoothTransformation)
+        self.rect = QRectF(x, y, self.pixmap.width(), self.pixmap.height())
+        self.speed_y = KITTEN_SPEED + random.uniform(-1, 1)
+        self.speed_x = random.uniform(-1, 1)
+        self.is_falling = True
+        self.last_toggle_time = time.time()
+        self.toggle_count = 0
+        self.freeze_motion = False
+
+    def update(self, stacked_kittens, screen_rects):
+        now = time.time()
+        if self.freeze_motion:
+            return
+
+        if self.is_falling:
+            self.rect.moveTop(self.rect.top() + self.speed_y)
+            self.rect.moveLeft(self.rect.left() + self.speed_x)
+
+        for screen_rect in screen_rects:
+                if screen_rect.contains(self.rect.center().toPoint()):
+                    # Bottom collision
+                    if self.rect.bottom() >= screen_rect.bottom():
+                        self.rect.moveBottom(screen_rect.bottom())
+                        self.is_falling = False
+                        self.speed_x = 0
+                        return
+
+                    # Optional: Left/right horizontal clamp
+                    if self.rect.left() < screen_rect.left():
+                        self.rect.moveLeft(screen_rect.left())
+                    elif self.rect.right() > screen_rect.right():
+                        self.rect.moveRight(screen_rect.right())
+                    break  # found the containing screen, no need to check others
+                
+        support = None
+        for other in stacked_kittens:
+            if other != self and not other.is_falling:
+                if self.rect.intersects(other.rect):
+                    if abs(self.rect.bottom() - other.rect.top()) <= self.speed_y:
+                        if support is None or other.rect.top() < support.rect.top():
+                            support = other
+
+        if support:
+            self.rect.moveBottom(support.rect.top())
+            offset_x = self.rect.center().x() - support.rect.center().x()
+            if abs(offset_x) > STABILITY_THRESHOLD_X:
+                if now - self.last_toggle_time > VIBRATION_GUARD_TIME:
+                    self.is_falling = True
+                    self.speed_x = SLIDE_HORIZONTAL_SPEED if offset_x > 0 else -SLIDE_HORIZONTAL_SPEED
+                    self.last_toggle_time = now
+                    self.toggle_count += 1
+            else:
+                if self.is_falling:
+                    self.toggle_count += 1
+                self.is_falling = False
+                self.speed_x = 0
+                self.last_toggle_time = now
+        else:
+            if not self.is_falling and now - self.last_toggle_time > VIBRATION_GUARD_TIME:
                 self.is_falling = True
-                self.horizontal_slide_speed = 0 # Reset horizontal slide if it completely falls off a stack
+                self.speed_x = 0
+                self.last_toggle_time = now
+                self.toggle_count += 1
 
-# --- Game Variables ---
-all_kittens = pygame.sprite.Group()
-stacked_kittens = pygame.sprite.Group()
-clock = pygame.time.Clock()
-spawn_timer = 0
-SPAWN_INTERVAL = 5
-
-# Initialize column heights
-column_highest_stacked_y = [SCREEN_HEIGHT] * SPAWN_COLUMNS
-
-# Temporary visual indicator timer
-show_test_rect_duration = FPS * 2
-test_rect_timer = 0
-
-# --- Game Loop ---
-running = True
-print("Starting game loop.")
-while running:
-    for event in pygame.event.get():
-        if event.type == pygame.QUIT:
-            running = False
-            print("Quit event detected. Exiting game loop.")
-        if event.type == pygame.KEYDOWN: # Check for KEYDOWN event type
-            if event.key == pygame.K_ESCAPE:
-                running = False
-                print("Escape key pressed. Exiting application.")
-
-    # --- Conditional Spawning ---
-    if kitten_original_images:
-        spawn_timer += 1
-        if spawn_timer >= SPAWN_INTERVAL:
-            eligible_columns_indices = [
-                i for i, height in enumerate(column_highest_stacked_y)
-                if height > (KITTEN_MAX_DIMENSION + 10) # Ensure space for at least one kitten + buffer
-            ]
-
-            if eligible_columns_indices:
-                chosen_column_index = random.choice(eligible_columns_indices)
-                chosen_image = random.choice(kitten_original_images)
-                kitten_layer = random.choice([0, 1])
-
-                min_x_in_column = chosen_column_index * COLUMN_WIDTH
-                max_x_in_column = min(
-                    (chosen_column_index + 1) * COLUMN_WIDTH - chosen_image.get_width(),
-                    SCREEN_WIDTH - chosen_image.get_width()
-                )
-
-                if min_x_in_column < max_x_in_column:
-                    spawn_x = random.randint(min_x_in_column, max_x_in_column)
-                else: # Fallback if column is too narrow for kitten, spawn at column start
-                    spawn_x = min_x_in_column
-                    if spawn_x + chosen_image.get_width() > SCREEN_WIDTH: # If even column start exceeds screen
-                        spawn_x = SCREEN_WIDTH - chosen_image.get_width()
-
-                spawn_y = -chosen_image.get_height()
-
-                new_kitten = Kitten(spawn_x, spawn_y, chosen_image, kitten_layer)
-                all_kittens.add(new_kitten)
-            # else: print("All columns are filled to the top! No more kittens can spawn.") # Too much console spam
-            spawn_timer = 0
-    elif not pygame.time.get_ticks() % (FPS * 5):
-        print("WARNING: No kitten images loaded. No kittens will spawn.")
-
-    # --- Update ---
-    for kitten in list(all_kittens): # Iterate over a copy to allow safe modification
-        kitten.update(stacked_kittens)
-        # If kitten has stopped falling AND is not already in the stacked group, add it.
-        # Note: 'is_falling' being False now means it's firmly stable.
-        if not kitten.is_falling and kitten not in stacked_kittens:
-            stacked_kittens.add(kitten)
-            # print(f"Kitten (ID:{id(kitten)}) moved to stacked_kittens group. Stacked count: {len(stacked_kittens)}")
-
-            # Update the highest stacked point for the columns this kitten occupies
-            start_col = kitten.rect.x // COLUMN_WIDTH
-            end_col = (kitten.rect.right - 1) // COLUMN_WIDTH
-
-            for i in range(start_col, end_col + 1):
-                if 0 <= i < SPAWN_COLUMNS:
-                    column_highest_stacked_y[i] = min(column_highest_stacked_y[i], kitten.rect.top)
-                    # print(f"Column {i} filled up to Y: {column_highest_stacked_y[i]}")
-
-    # --- Draw ---
-    screen.fill((135, 206, 235)) # Sky blue background
-
-    # Sort all_kittens by layer to ensure correct drawing order (layer 0 first, then layer 1)
-    sorted_kittens = sorted(all_kittens, key=lambda k: k.layer)
-    for kitten in sorted_kittens:
-        # Calculate the draw position for the image based on the collision rect's center
-        draw_rect = kitten.image.get_rect(center=kitten.rect.center)
-        screen.blit(kitten.image, draw_rect)
-
-        # --- DEBUG VISUAL: Uncomment to see the collision rects ---
-        # if kitten.is_falling:
-        #     pygame.draw.rect(screen, (255, 0, 0, 100), kitten.rect, 1) # Red for falling/sliding
-        # else:
-        #     pygame.draw.rect(screen, (0, 255, 0, 100), kitten.rect, 1) # Green for stable
+        if self.toggle_count > TOGGLE_COUNT_LIMIT:
+            self.freeze_motion = True
+            print(f"Kitten at {self.rect.topLeft()} frozen to prevent vibration.")
 
 
-    # Temporary red rectangle indicator
-    if test_rect_timer < show_test_rect_duration:
-        pygame.draw.rect(screen, (255, 0, 0), (SCREEN_WIDTH - 120, 20, 100, 100))
-        test_rect_timer += 1
 
-    # --- Optional: Draw column boundaries for debugging ---
-    # for i in range(SPAWN_COLUMNS):
-    #     pygame.draw.line(screen, (255, 255, 0, 100), (i * COLUMN_WIDTH, 0), (i * COLUMN_WIDTH, SCREEN_HEIGHT), 1)
-    #     pygame.draw.line(screen, (255, 0, 255, 150), (i * COLUMN_WIDTH, column_highest_stacked_y[i]), ((i+1) * COLUMN_WIDTH -1, column_highest_stacked_y[i]), 2)
+# --- Fall Phase ---
+class TransparentOverlay(QWidget):
+    def __init__(self, parent=None, geometry=None):
+        super().__init__(parent)
+        self.setWindowFlags(Qt.FramelessWindowHint | Qt.WindowStaysOnTopHint | Qt.Tool)
+        self.setAttribute(Qt.WA_TranslucentBackground)
+        self.setAttribute(Qt.WA_NoSystemBackground, True)
+        self.setAttribute(Qt.WA_TransparentForMouseEvents, False)
+
+        # Use passed geometry or fallback to full window constants
+        if geometry:
+            self.setGeometry(geometry)
+        else:
+            self.setGeometry(WINDOW_LEFT, WINDOW_TOP, WINDOW_WIDTH, WINDOW_HEIGHT)
+
+        # Create screen rects relative to the overlay
+        self.screen_rects = [
+            screen.geometry().translated(-self.geometry().left(), -self.geometry().top())
+            for screen in QGuiApplication.screens()
+        ]
 
 
-    # --- Update the display ---
-    pygame.display.flip()
-    clock.tick(FPS)
+        self.kitten_images = self.load_kittens()
+        self.all_kittens = []
+        self.stacked_kittens = []
+        self.spawn_timer = QTimer()
+        self.spawn_timer.timeout.connect(self.spawn_kitten)
+        self.spawn_timer.start(SPAWN_INTERVAL_MS)
 
-print("Game loop ended.")
-pygame.quit()
-print("Pygame quit and system exit.")
-sys.exit()
+        self.update_timer = QTimer()
+        self.update_timer.timeout.connect(self.game_loop)
+        self.update_timer.start(1000 // FPS)
+
+        self.column_heights = [self.geometry().bottom()] * SPAWN_COLUMNS
+
+    def load_kittens(self):
+        kittens = []
+        if not os.path.exists(KITTEN_IMAGE_PATH):
+            print("ERROR: Kitten image path does not exist.")
+            return kittens
+
+        for filename in os.listdir(KITTEN_IMAGE_PATH):
+            if filename.lower().endswith(('.png', '.jpg', '.jpeg', '.bmp')):
+                filepath = os.path.join(KITTEN_IMAGE_PATH, filename)
+                pixmap = QPixmap(filepath)
+                if not pixmap.isNull():
+                    w, h = pixmap.width(), pixmap.height()
+                    if w > h:
+                        new_w = KITTEN_MAX_DIMENSION
+                        new_h = int(new_w * h / w)
+                    else:
+                        new_h = KITTEN_MAX_DIMENSION
+                        new_w = int(new_h * w / h)
+                    scaled = pixmap.scaled(new_w, new_h, Qt.KeepAspectRatio, Qt.SmoothTransformation)
+                    kittens.append(scaled)
+        print(f"Loaded {len(kittens)} kitten images.")
+        return kittens
+
+    def spawn_kitten(self, single=False):
+        if not self.kitten_images:
+            print("No kitten images loaded. Skipping spawn.")
+            return
+
+        image = random.choice(self.kitten_images)
+        img_width = image.width()
+
+        eligible_columns = []
+        for i in range(SPAWN_COLUMNS):
+            if self.column_heights[i] > TOP_THRESHOLD:
+                min_x = i * COLUMN_WIDTH
+                max_x = (i + 1) * COLUMN_WIDTH - img_width
+                if max_x >= min_x:
+                    eligible_columns.append(i)
+
+        if not eligible_columns:
+            print("WARNING: All columns are filled to the top. Cannot spawn more kittens.")
+            return
+
+        filled_count = SPAWN_COLUMNS - len(eligible_columns)
+        if filled_count >= int(SPAWN_COLUMNS * 0.8):
+            print(f"NOTICE: {filled_count}/{SPAWN_COLUMNS} columns are filled near the top.")
+
+        spawn_count = 1 if single else random.randint(1, 3)
+        for _ in range(spawn_count):
+            if not eligible_columns:
+                break
+
+            col = random.choice(eligible_columns)
+            min_x = col * COLUMN_WIDTH
+            max_x = min((col + 1) * COLUMN_WIDTH - image.width(), WINDOW_WIDTH - image.width())
+
+            if max_x < min_x:
+                print(f"Invalid spawn range for column {col}: min_x={min_x}, max_x={max_x}")
+                continue
+
+            # Spawn kitten horizontally within column boundaries
+            x = random.randint(min_x, max_x)
+
+            # Spawn above the visible area
+            y = -image.height() - random.randint(0, 100)
+
+            # # Spawn in screen-wide range (absolute)
+            # x = random.randint(WINDOW_LEFT, WINDOW_RIGHT - image.width())
+            # x += random.randint(-20, 20)
+            # x = max(WINDOW_LEFT, min(x, WINDOW_RIGHT - image.width()))
+            # y = WINDOW_TOP - image.height() - random.randint(0, 100)
+
+            # # ✅ Convert to overlay-relative coordinates
+            # x -= WINDOW_LEFT
+            # y -= WINDOW_TOP
+
+            print(f"Spawning kitten at x={x}, y={y}, col={col}")
+            self.all_kittens.append(Kitten(x, y, image))
+
+    def game_loop(self):
+        for kitten in self.all_kittens:
+            kitten.update(self.stacked_kittens, self.screen_rects)
+
+            if not kitten.is_falling and kitten not in self.stacked_kittens:
+                self.stacked_kittens.append(kitten)
+                start_col = int(kitten.rect.left()) // COLUMN_WIDTH
+                end_col = int(kitten.rect.right()) // COLUMN_WIDTH
+                end_col = min(SPAWN_COLUMNS - 1, int(kitten.rect.right()) // COLUMN_WIDTH)
+
+                for i in range(start_col, end_col + 1):
+                    if 0 <= i < SPAWN_COLUMNS:
+                        self.column_heights[i] = min(self.column_heights[i], int(kitten.rect.top()))
+
+        self.repaint()
+
+    def paintEvent(self, event):
+        painter = QPainter(self)
+        painter.setRenderHint(QPainter.Antialiasing)
+        painter.setRenderHint(QPainter.SmoothPixmapTransform)
+        painter.setOpacity(1.0)
+
+        for kitten in self.all_kittens:
+            # adjusted_pos = kitten.rect.topLeft() - QPoint(WINDOW_LEFT, WINDOW_TOP)
+            painter.drawPixmap(kitten.rect.topLeft(), kitten.pixmap)
+
+
+    def mousePressEvent(self, event):
+        for kitten in reversed(self.all_kittens):
+            if kitten.rect.contains(event.pos()):
+                print(f"Click blocked by kitten at {kitten.rect.topLeft()}.")
+                return
+        print("Click passed through.")
+        event.ignore()
+
+
+
+
+if __name__ == '__main__':
+    window = MainWindow()
+    window.show()
+    sys.exit(app.exec_())
