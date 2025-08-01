@@ -37,9 +37,8 @@ COLUMN_WIDTH = WINDOW_WIDTH // SPAWN_COLUMNS
 TOP_THRESHOLD = 10
 VIBRATION_GUARD_TIME = 0.2
 TOGGLE_COUNT_LIMIT = 6
-
-
-
+GRAVITY = 0.5
+TERMINAL_VELOCITY = 10
 
 
 # --- Pre-fall Phase ---
@@ -119,14 +118,24 @@ class MainWindow(QMainWindow):
         self.overlay.spawn_timer.start(SPAWN_INTERVAL_MS)
 
 
-
 class Kitten:
     def __init__(self, x, y, image):
         self.rotation = random.randint(-90, 90)
         transform = QTransform().rotate(self.rotation)
         self.original_pixmap = image
         self.pixmap = image.transformed(transform, Qt.SmoothTransformation)
-        self.rect = QRectF(x, y, self.pixmap.width(), self.pixmap.height())
+
+        width = self.pixmap.width()
+        height = self.pixmap.height()
+
+        # Shrink collision rect compared to visible image
+        collision_width = width * KITTEN_COLLISION_SCALE
+        collision_height = height * KITTEN_COLLISION_SCALE
+        offset_x = (width - collision_width) / 2
+        offset_y = (height - collision_height) / 2
+
+        self.rect = QRectF(x + offset_x, y + offset_y, collision_width, collision_height)
+        # self.rect = QRectF(x, y, self.pixmap.width(), self.pixmap.height())
         self.speed_y = KITTEN_SPEED + random.uniform(-1, 1)
         self.speed_x = random.uniform(-1, 1)
         self.is_falling = True
@@ -134,31 +143,69 @@ class Kitten:
         self.toggle_count = 0
         self.freeze_motion = False
 
+
+
+
     def update(self, stacked_kittens, screen_rects):
         now = time.time()
         if self.freeze_motion:
             return
+        
+        collided = False  # define once, used in both contexts
 
         if self.is_falling:
-            self.rect.moveTop(self.rect.top() + self.speed_y)
-            self.rect.moveLeft(self.rect.left() + self.speed_x)
+            steps = int(max(abs(self.speed_y), abs(self.speed_x))) + 1
+            dy = self.speed_y / steps
+            dx = self.speed_x / steps
+            
+            for _ in range(steps):
+                self.rect.translate(dx, dy)
 
-        for screen_rect in screen_rects:
-                if screen_rect.contains(self.rect.center().toPoint()):
-                    # Bottom collision
-                    if self.rect.bottom() >= screen_rect.bottom():
-                        self.rect.moveBottom(screen_rect.bottom())
-                        self.is_falling = False
-                        self.speed_x = 0
-                        return
+            # Check collision with stacked kittens
+                for other in stacked_kittens:
+                     if other != self and self.rect.intersects(other.rect):
 
-                    # Optional: Left/right horizontal clamp
-                    if self.rect.left() < screen_rect.left():
-                        self.rect.moveLeft(screen_rect.left())
-                    elif self.rect.right() > screen_rect.right():
-                        self.rect.moveRight(screen_rect.right())
-                    break  # found the containing screen, no need to check others
-                
+            # Collision from above (falling on top)
+                        if self.rect.bottom() > other.rect.top() and self.rect.center().y() < other.rect.center().y():
+                            self.rect.moveBottom(other.rect.top())
+                            self.is_falling = False
+                            self.speed_y = 0
+                            collided = True
+                            break
+                if collided:
+                    break
+
+                # Collision screen edges
+                for screen_rect in screen_rects:
+                        if screen_rect.contains(self.rect.center().toPoint()):
+                            # Bottom collision
+                            if self.rect.bottom() >= screen_rect.bottom():
+                                self.rect.moveBottom(screen_rect.bottom())
+                                self.is_falling = False
+                                self.speed_y = 0
+                                collided = True
+                                break
+
+                            # Left/right horizontal clamp
+                            if self.rect.left() < screen_rect.left():
+                                self.rect.moveLeft(screen_rect.left())
+                            elif self.rect.right() > screen_rect.right():
+                                self.rect.moveRight(screen_rect.right())
+                            break  # found the containing screen, no need to check others
+
+                        if collided:
+                            break
+                        
+
+
+            # Apply gravity if still falling
+            if self.is_falling:
+                self.speed_y = min(self.speed_y + GRAVITY, TERMINAL_VELOCITY)
+            
+
+
+
+    # --- Stability/Vibration Logic ---
         support = None
         for other in stacked_kittens:
             if other != self and not other.is_falling:
@@ -189,9 +236,11 @@ class Kitten:
                 self.last_toggle_time = now
                 self.toggle_count += 1
 
+# --- Freeze kitten if it's vibrating too much ---
         if self.toggle_count > TOGGLE_COUNT_LIMIT:
             self.freeze_motion = True
             print(f"Kitten at {self.rect.topLeft()} frozen to prevent vibration.")
+
 
 
 
@@ -343,8 +392,6 @@ class TransparentOverlay(QWidget):
                 return
         print("Click passed through.")
         event.ignore()
-
-
 
 
 if __name__ == '__main__':
