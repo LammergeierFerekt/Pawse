@@ -39,7 +39,7 @@ VIBRATION_GUARD_TIME = 0.2
 TOGGLE_COUNT_LIMIT = 6
 GRAVITY = 0.5
 TERMINAL_VELOCITY = 10
-
+MAX_SLIDE_SPEED = 5 
 
 # --- Pre-fall Phase ---
 class MainWindow(QMainWindow):
@@ -152,12 +152,10 @@ class Kitten:
             return
         
         collided = False  # define once, used in both contexts
-
         if self.is_falling:
             steps = int(max(abs(self.speed_y), abs(self.speed_x))) + 1
             dy = self.speed_y / steps
-            dx = self.speed_x / steps
-            
+            dx = self.speed_x / steps 
             for _ in range(steps):
                 self.rect.translate(dx, dy)
 
@@ -167,11 +165,15 @@ class Kitten:
 
             # Collision from above (falling on top)
                         if self.rect.bottom() > other.rect.top() and self.rect.center().y() < other.rect.center().y():
-                            self.rect.moveBottom(other.rect.top())
-                            self.is_falling = False
-                            self.speed_y = 0
-                            collided = True
-                            break
+                            overlap_width = self.rect.intersected(other.rect).width()
+                            min_required_overlap = self.rect.width() * 0.4  # Only stop if 40%+ horizontal overlap
+
+                            if overlap_width > min_required_overlap:
+                                self.rect.moveBottom(other.rect.top())
+                                self.is_falling = False
+                                self.speed_y = 0
+                                collided = True
+                                break
                 if collided:
                     break
 
@@ -218,11 +220,11 @@ class Kitten:
             self.rect.moveBottom(support.rect.top())
             offset_x = self.rect.center().x() - support.rect.center().x()
             if abs(offset_x) > STABILITY_THRESHOLD_X:
-                if now - self.last_toggle_time > VIBRATION_GUARD_TIME:
-                    self.is_falling = True
-                    self.speed_x = SLIDE_HORIZONTAL_SPEED if offset_x > 0 else -SLIDE_HORIZONTAL_SPEED
-                    self.last_toggle_time = now
-                    self.toggle_count += 1
+                self.is_falling = True
+                slide_speed = min(abs(offset_x) / 10, MAX_SLIDE_SPEED)
+                self.speed_x = slide_speed if offset_x > 0 else -slide_speed
+                self.last_toggle_time = now
+                self.toggle_count += 1
             else:
                 if self.is_falling:
                     self.toggle_count += 1
